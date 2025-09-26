@@ -83,7 +83,14 @@ class SimpleNet(nn.Module):
 
         ######## TODO ########
         # DO NOT change the code outside this part.
-
+        self.t_linear = TimeLinear(dim_in, dim_hids[0], num_timesteps)
+        
+        hiddens = []
+        for i in range(len(dim_hids) - 1):
+            hiddens.append(nn.Linear(dim_hids[i], dim_hids[i+1]))
+            hiddens.append(nn.SiLU())
+        self.hiddens = nn.Sequential(*hiddens)
+        self.final = nn.Linear(dim_hids[-1], dim_out)
         ######################
         
     def forward(self, x: torch.Tensor, t: torch.Tensor):
@@ -97,6 +104,8 @@ class SimpleNet(nn.Module):
         """
         ######## TODO ########
         # DO NOT change the code outside this part.
-
+        x = self.t_linear(x, t)
+        x = self.hiddens(x)
+        x = self.final(x)
         ######################
         return x
