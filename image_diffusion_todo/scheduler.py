@@ -37,10 +37,15 @@ class BaseScheduler(nn.Module):
             # 1. Define alphā_t = f(t/T) where f is a cosine schedule:
             #       alphā_t = cos^2( ( (t/T + s) / (1+s) ) * (π/2) )
             #    with s = 0.008 (a small constant for stability).
+            s = 0.008
+            timesteps = torch.arange(num_train_timesteps + 1, dtype=torch.float64)
+            alphas_cumprod = torch.cos(((timesteps / num_train_timesteps) + s) / (1 + s) * np.pi / 2) ** 2
+            alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
             # 2. Convert alphā_t into betas using:
             #       beta_t = 1 - alphā_t / alphā_{t-1}
+            betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
             # 3. Return betas as a tensor of shape [num_train_timesteps].
-            raise NotImplementedError("TODO: Implement cosine beta schedule here!")
+            betas = torch.clip(betas, 0.0001, 0.9999).float()
                
         else:
             raise NotImplementedError(f"{mode} is not implemented.")
@@ -119,11 +124,22 @@ class DDPMScheduler(BaseScheduler):
         """
         ######## TODO ########
         # 1. Extract beta_t, alpha_t, and alpha_bar_t from the scheduler.
-        # 2. Compute the predicted mean μ_θ(x_t, t) = 1/√α_t * (x_t - (β_t/√(1-ᾱ_t)) * ε̂_θ).
-        # 3. Compute the posterior variance \tilde{β}_t = ((1-ᾱ_{t-1})/(1-ᾱ_t)) * β_t.
+        alpha_t = extract(self.alphas, t, x_t)
+        beta_t = extract(self.betas, t, x_t)
+        sqrt_one_minus_alphas_cumprod_t = (1 - extract(self.alphas_cumprod, t, x_t)).sqrt()
+        
+        # 2. Compute the predicted mean μ_θ(x_t, t)
+        mean = (1 / alpha_t.sqrt()) * (x_t - (beta_t / sqrt_one_minus_alphas_cumprod_t) * eps_theta)
+        
         # 4. Add Gaussian noise scaled by √(\tilde{β}_t) unless t == 0.
+        if t.item() > 0:
+            sigma_t = extract(self.sigmas, t, x_t)
+            noise = sigma_t * torch.randn_like(x_t)
+        else:
+            noise = 0
+            
         # 5. Return the final sample at t-1.
-        sample_prev = None
+        sample_prev = mean + noise
         #######################
         return sample_prev
 
@@ -140,8 +156,27 @@ class DDPMScheduler(BaseScheduler):
             sample_prev: denoised image sample at timestep t-1
         """
         ######## TODO ########
+        if t.item() == 0:
+            return x0_pred
 
-        sample_prev = None
+        alpha_t = extract(self.alphas, t, x_t)
+        beta_t = extract(self.betas, t, x_t)
+        alpha_bar_t = extract(self.alphas_cumprod, t, x_t)
+        
+        alpha_bar_t_prev = torch.cat([torch.tensor([1.0]).to(x_t.device), self.alphas_cumprod[:-1]])
+        alpha_bar_t_prev = extract(alpha_bar_t_prev, t, x_t)
+
+        mean_coef1 = (alpha_bar_t_prev.sqrt() * beta_t) / (1 - alpha_bar_t)
+        mean_coef2 = (alpha_t.sqrt() * (1 - alpha_bar_t_prev)) / (1 - alpha_bar_t)
+        mean = mean_coef1 * x0_pred + mean_coef2 * x_t
+
+        if t.item() > 0:
+            sigma_t = extract(self.sigmas, t, x_t)
+            noise = sigma_t * torch.randn_like(x_t)
+        else:
+            noise = 0
+            
+        sample_prev = mean + noise
         #######################
         return sample_prev
 
@@ -158,8 +193,13 @@ class DDPMScheduler(BaseScheduler):
             sample_prev: denoised image sample at timestep t-1
         """
         ######## TODO ########
-
-        sample_prev = None
+        if t.item() > 0:
+            sigma_t = extract(self.sigmas, t, x_t)
+            noise = sigma_t * torch.randn_like(x_t)
+        else:
+            noise = 0
+            
+        sample_prev = mean_theta + noise
         #######################
         return sample_prev
 
@@ -189,12 +229,14 @@ class DDPMScheduler(BaseScheduler):
         """
         
         if eps is None:
-            eps       = torch.randn(x_0.shape, device='cuda')
+            eps       = torch.randn(x_0.shape, device=x_0.device)
 
         ######## TODO ########
         # DO NOT change the code outside this part.
         # Assignment 1. Implement the DDPM forward step.
-        x_t = None
+        sqrt_alphas_cumprod = extract(self.alphas_cumprod, t, x_0).sqrt()
+        sqrt_one_minus_alphas_cumprod = (1. - extract(self.alphas_cumprod, t, x_0)).sqrt()
+        x_t = sqrt_alphas_cumprod * x_0 + sqrt_one_minus_alphas_cumprod * eps
         #######################
 
         return x_t, eps
